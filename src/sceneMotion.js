@@ -1,21 +1,58 @@
-// One scroll timeline controls the full scene. Character images are placeholders
-// until the user's matching 3D model is available; never simulate a 3D turn here.
+// Desktop uses a pinned scroll timeline. Mobile keeps the complete reading flow
+// and adds touch-friendly reveals and lightweight portrait parallax.
 export function mountSceneMotion() {
   const scenes = [...document.querySelectorAll('.scene')];
   const media = matchMedia('(min-width:701px) and (min-height:600px) and (prefers-reduced-motion:no-preference)');
+  const mobileMedia = matchMedia('(max-width:700px) and (prefers-reduced-motion:no-preference)');
   const palette = ['#faf8f4', '#e2ebdc', '#dfeaf1', '#eedfd9', '#e4e7d7', '#faf8f4'];
   const root = document.documentElement;
   const clamp = n => Math.max(0, Math.min(1, n));
   const ease = n => { n = clamp(n); return n * n * (3 - 2 * n); };
   const rgb = hex => hex.match(/[a-f\d]{2}/gi).map(n => parseInt(n, 16));
   const colors = palette.map(rgb);
-  let frame = 0, current = scrollY, target = current, last = 0, intervals = [];
+  let frame = 0, current = scrollY, target = current, last = 0, intervals = [], mobileObserver;
   const columns = scenes.map(s => [...s.querySelectorAll('.left,.right')]);
   const parts = columns.map(pair => pair.map(col => [...col.children]));
   const clear = () => {
     document.body.classList.remove('cinematic');
     scenes.forEach(s => { s.inert = false; s.removeAttribute('aria-hidden'); s.style.removeProperty('height'); });
+    parts.flat(2).forEach(part => {
+      part.style.removeProperty('opacity');
+      part.style.removeProperty('transform');
+      part.style.removeProperty('clip-path');
+    });
     root.style.removeProperty('--stage-color');
+  };
+  const clearMobile = () => {
+    mobileObserver?.disconnect(); mobileObserver = undefined;
+    document.body.classList.remove('mobile-motion');
+    root.style.removeProperty('--mobile-progress');
+    scenes.forEach(scene => {
+      scene.classList.remove('is-visible');
+      scene.style.removeProperty('--mobile-person-shift');
+    });
+  };
+  const setupMobile = () => {
+    clearMobile();
+    if (!mobileMedia.matches) return;
+    document.body.classList.add('mobile-motion');
+    mobileObserver = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) entry.target.classList.add('is-visible');
+      });
+    }, { rootMargin: '0px 0px -12% 0px', threshold: .08 });
+    scenes.forEach(scene => mobileObserver.observe(scene));
+    paintMobile();
+  };
+  const paintMobile = () => {
+    if (!mobileMedia.matches) return;
+    const max = Math.max(1, document.documentElement.scrollHeight - innerHeight);
+    root.style.setProperty('--mobile-progress', `${Math.min(1, scrollY / max)}`);
+    scenes.forEach(scene => {
+      const rect = scene.getBoundingClientRect();
+      const centerDelta = (rect.top + rect.height / 2 - innerHeight / 2) / innerHeight;
+      scene.style.setProperty('--mobile-person-shift', `${Math.max(-18, Math.min(18, centerDelta * -12))}px`);
+    });
   };
   function measure() {
     if (!media.matches) { clear(); return; }
@@ -72,15 +109,21 @@ export function mountSceneMotion() {
     });
     if (Math.abs(current-target) > .1) frame = requestAnimationFrame(paint);
   }
-  function schedule() { target = scrollY; if(!frame) frame=requestAnimationFrame(paint); }
+  function schedule() {
+    target = scrollY;
+    if (mobileMedia.matches) paintMobile();
+    if(!frame) frame=requestAnimationFrame(paint);
+  }
   const resize = new ResizeObserver(measure);
   columns.flat().forEach(col => resize.observe(col));
   addEventListener('scroll',schedule,{passive:true});
   addEventListener('resize',measure); media.addEventListener('change',measure);
-  measure();
+  mobileMedia.addEventListener('change',setupMobile);
+  measure(); setupMobile();
   return () => {
-    cancelAnimationFrame(frame); resize.disconnect(); clear();
+    cancelAnimationFrame(frame); resize.disconnect(); clear(); clearMobile();
     removeEventListener('scroll',schedule);removeEventListener('resize',measure);media.removeEventListener('change',measure);
+    mobileMedia.removeEventListener('change',setupMobile);
     parts.flat(2).forEach(p => {p.style.removeProperty('opacity');p.style.removeProperty('transform');p.style.removeProperty('clip-path');});
   };
 }
