@@ -13,6 +13,16 @@ export function mountSceneMotion() {
   let frame = 0, current = scrollY, target = current, last = 0, intervals = [], mobileObserver;
   const columns = scenes.map(s => [...s.querySelectorAll('.left,.right')]);
   const parts = columns.map(pair => pair.map(col => [...col.children]));
+  const portraits = scenes.map(s => s.querySelector('.portrait'));
+  // Visible alpha bounds in the supplied 800 x 1200 canvases.
+  const bounds = {
+    'person-front-cutout.png': [141,70,658,1130],
+    'person-insight-cutout.png': [135,70,665,1130],
+    'person-story-cutout.png': [40,143,760,1057],
+    'person-learn-cutout.png': [168,70,632,1130],
+    'person-grow-cutout.png': [144,70,655,1130],
+    'person-real-cutout.png': [59,70,741,1130],
+  };
   const clear = () => {
     document.body.classList.remove('cinematic');
     scenes.forEach(s => { s.inert = false; s.removeAttribute('aria-hidden'); s.style.removeProperty('height'); });
@@ -22,15 +32,17 @@ export function mountSceneMotion() {
       part.style.removeProperty('clip-path');
     });
     root.style.removeProperty('--stage-color');
+    current = target = scrollY;
   };
   const clearMobile = () => {
     mobileObserver?.disconnect(); mobileObserver = undefined;
     document.body.classList.remove('mobile-motion');
     root.style.removeProperty('--mobile-progress');
     scenes.forEach(scene => {
-      scene.classList.remove('is-visible');
       scene.style.removeProperty('--mobile-person-shift');
+      scene.style.removeProperty('--mobile-person-turn');
     });
+    document.querySelectorAll('.is-revealed').forEach(el => el.classList.remove('is-revealed'));
   };
   const setupMobile = () => {
     clearMobile();
@@ -38,10 +50,13 @@ export function mountSceneMotion() {
     document.body.classList.add('mobile-motion');
     mobileObserver = new IntersectionObserver(entries => {
       entries.forEach(entry => {
-        if (entry.isIntersecting) entry.target.classList.add('is-visible');
+        if (entry.isIntersecting) {
+          entry.target.classList.add('is-revealed');
+          mobileObserver.unobserve(entry.target);
+        }
       });
     }, { rootMargin: '0px 0px -12% 0px', threshold: .08 });
-    scenes.forEach(scene => mobileObserver.observe(scene));
+    [...parts.flat(2), ...portraits].forEach(el => mobileObserver.observe(el));
     paintMobile();
   };
   const paintMobile = () => {
@@ -52,17 +67,35 @@ export function mountSceneMotion() {
       const rect = scene.getBoundingClientRect();
       const centerDelta = (rect.top + rect.height / 2 - innerHeight / 2) / innerHeight;
       scene.style.setProperty('--mobile-person-shift', `${Math.max(-18, Math.min(18, centerDelta * -12))}px`);
+      const personRect = scene.querySelector('.portrait').getBoundingClientRect();
+      const turn = Math.max(-16, Math.min(16, (personRect.top / innerHeight - .25) * 24));
+      scene.style.setProperty('--mobile-person-turn', `${turn}deg`);
     });
   };
   function measure() {
     if (!media.matches) { clear(); return; }
     document.body.classList.add('cinematic');
+    root.style.setProperty('--viewport-height', `${innerHeight}px`);
+    portraits.forEach(portrait => {
+      const filename = portrait.querySelector('img').getAttribute('src').split('/').pop();
+      const [x0,y0,x1,y1] = bounds[filename] || [0,0,800,1200];
+      // Fit wide poses inside their own third without distorting or cropping them.
+      const scale = Math.min(innerHeight * 5 / 6 / (y1-y0),
+        innerWidth / 3 * .94 / (x1-x0));
+      portrait.style.setProperty('--image-width', `${800*scale}px`);
+      portrait.style.setProperty('--image-height', `${1200*scale}px`);
+    });
     const grid = scenes[0].querySelector('.grid');
     const style = getComputedStyle(grid);
     const available = grid.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+    // Animated offsets affect scrollHeight. Measure the resting layout only.
+    const elements = parts.flat(2);
+    const transforms = elements.map(el => el.style.transform);
+    elements.forEach(el => { el.style.transform = 'none'; });
     const overflows = columns.map(pair => pair.map(col => Math.max(0, col.scrollHeight - available)));
+    elements.forEach((el,i) => { el.style.transform = transforms[i]; });
     // All chapters use one shared reading duration and the same viewport frame.
-    const length = innerHeight * 1.6 + Math.max(0, ...overflows.flat());
+    const length = innerHeight * 2.2 + Math.max(0, ...overflows.flat());
     intervals = scenes.map((scene, i) => {
       scene.style.height = `${length}px`;
       return { start: i * length, length, overflow: overflows[i] };
@@ -91,19 +124,23 @@ export function mountSceneMotion() {
       scene.inert = !enabled;
       scene.setAttribute('aria-hidden', String(!enabled));
       scene.style.setProperty('--scene-visibility', visible ? 'visible' : 'hidden');
-      scene.style.setProperty('--person-opacity', Math.min(enter, 1-exit));
-      scene.style.setProperty('--person-scale', .96 + .04 * Math.min(enter,1-exit));
-      const progressPan = clamp((current-r.start-innerHeight*.3)/Math.max(1,r.length-innerHeight*.9));
+      // Swap only edge-on. Both halves rotate in the same direction, with no ghosting.
+      const arriving = ease((enter-.5)*2);
+      const departing = ease(exit*2);
+      scene.style.setProperty('--person-opacity', enter >= .5 && exit < .5 ? 1 : 0);
+      scene.style.setProperty('--person-turn', `${-90*(1-arriving)+90*departing}deg`);
+      // Finish reading overflow before the next chapter starts moving in.
+      const progressPan = clamp((current-r.start-innerHeight*.3)/Math.max(1,r.length-innerHeight*1.05));
       columns[i].forEach((col,side) => {
         col.style.setProperty('--column-pan', `${-progressPan * r.overflow[side]}px`);
         parts[i][side].forEach((part,j) => {
-          const stagger = Math.min(j,5)*.035;
-          const progress = ease((enter-.42-stagger)/(.58-stagger));
-          const departure = ease(exit/.58);
-          const opacity = progress * (1-departure);
+          const stagger = Math.min(j,5)*.018;
+          const progress = ease((enter-stagger)/(1-stagger));
+          const departure = exit;
+          const opacity = Math.min(1,progress*4)*Math.min(1,(1-departure)*4);
           part.style.opacity = opacity;
-          part.style.transform = `translate3d(${(side?1:-1)*departure*44}px,${(1-progress)*48-departure*30}px,0)`;
-          part.style.clipPath = `inset(0 0 ${(1-progress)*100}% 0)`;
+          part.style.transform = `translate3d(0,${(1-progress)*innerHeight-departure*innerHeight}px,0)`;
+          part.style.clipPath = 'none';
         });
       });
     });
